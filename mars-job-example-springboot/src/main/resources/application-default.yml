@@ -1,0 +1,7 @@
+mars:
+  zk_address: localhost:2181
+  project_group: mars
+  job_event_expire_day: 0
+  job_execute_log_expire_day: 0
+
+testabcd: "* * * * * ?"
