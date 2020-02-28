@@ -1,5 +1,7 @@
 package org.lem.marsjob.service;
 
+import com.google.common.hash.HashCode;
+import com.google.common.hash.Hashing;
 import org.lem.marsjob.enums.Operation;
 import org.lem.marsjob.job.DelegateSimpleJob;
 import org.lem.marsjob.pojo.JobParam;
@@ -13,21 +15,24 @@ import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.quartz.SchedulerFactoryBean;
 
+import java.nio.charset.Charset;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class JobScheduleService implements InitializingBean {
     protected Logger LOG = LoggerFactory.getLogger(this.getClass());
 
     public static final String SCHEDULE_SERVICE_KEY = "schedule_service_key";
-    @Autowired
+
     private ZkService zkService;
-    @Autowired
+
     private SchedulerFactoryBean schedulerFactoryBean;
+
+    private Map<JobKey,JobParam> balanceJob=new ConcurrentHashMap<>();
 
     private Scheduler scheduler;
     private volatile boolean inited = false;
-    private List<JobEvenetListener> listeners=new ArrayList<>();
-
+    private List<JobEvenetListener> listeners = new ArrayList<>();
 
     public List<JobEvenetListener> getListeners() {
         return listeners;
@@ -41,7 +46,31 @@ public class JobScheduleService implements InitializingBean {
         this.zkService = zkService;
         this.schedulerFactoryBean = schedulerFactoryBean;
         zkService.setEventHandler(eventHandler());
+        zkService.addRebalanceListener(reBalanceJob());
     }
+
+    public ZkService.RebalanceHandler reBalanceJob(){
+       return new ZkService.RebalanceHandler() {
+           @Override
+           public void triggle() {
+               balanceJob.keySet().forEach(jobKey -> {
+                   try {
+                       scheduler.deleteJob(jobKey);
+                   } catch (SchedulerException e) {
+
+                   }
+               });
+               balanceJob.values().forEach(jobParam -> {
+                   try {
+                       addJob(jobParam,false);
+                   } catch (SchedulerException e) {
+                       e.printStackTrace();
+                   }
+               });
+           }
+       };
+    }
+
 
     public ZkService.EventHandler eventHandler() {
         ZkService.EventHandler eventHandler = new ZkService.EventHandler() {
@@ -54,7 +83,8 @@ public class JobScheduleService implements InitializingBean {
                             innerStopJob(jobParam);
                             break;
                         case UPDATE_CRON:
-                            innerReScheduleJob(jobParam);
+                            innerStopJob(jobParam);
+                            innerAddJob(jobParam);
                             break;
                         case ADD:
                             innerAddJob(jobParam);
@@ -69,12 +99,27 @@ public class JobScheduleService implements InitializingBean {
     }
 
 
+
     public void addJob(JobParam jobParam, boolean syn) throws SchedulerException {
         if (syn) {
             jobParam.setOperationCode(Operation.ADD.getOperationCode());
             sendOperation(jobParam);
         }
-        innerAddJob(jobParam);
+        if (isSelfJob(jobParam)) {
+            innerAddJob(jobParam);
+        }
+
+    }
+
+    private boolean isSelfJob(JobParam jobParam) {
+        if (jobParam.isBalance()){
+            ShardingParams params = zkService.getShardingParams();
+            HashCode hashCode = Hashing.murmur3_32().hashString(jobParam.getJobGroup() + "_" + jobParam.getJobName(), Charset.defaultCharset());
+            int index = Hashing.consistentHash(hashCode, params.getTotal());
+            if (index != params.getIndex())
+                return false;
+        }
+        return true;
     }
 
     public void deleteJob(JobParam jobParam, boolean syn) throws SchedulerException {
@@ -90,8 +135,12 @@ public class JobScheduleService implements InitializingBean {
             jobParam.setOperationCode(Operation.UPDATE_CRON.getOperationCode());
             sendOperation(jobParam);
         }
-        innerReScheduleJob(jobParam);
+        innerStopJob(jobParam);
+        if(isSelfJob(jobParam))
+            innerAddJob(jobParam);
     }
+
+
 
 
     private void sendOperation(JobParam jobParam) {
@@ -106,11 +155,12 @@ public class JobScheduleService implements InitializingBean {
         JobDetail jobDetail = getJobDetailByJobParam(jobParam);
         JobKey jobKey = jobDetail.getKey();
         if (scheduler.checkExists(jobKey)) {
-            innerReScheduleJob(jobParam);
-            return;
+            innerStopJob(jobParam);
         }
         CronTrigger trigger = getCronTrigger(jobParam, jobKey);
         scheduler.scheduleJob(jobDetail, trigger);
+        if(jobParam.isBalance())
+            balanceJob.put(jobKey,jobParam);
     }
 
     private JobDetail getJobDetailByJobParam(JobParam jobParam) {
@@ -121,19 +171,14 @@ public class JobScheduleService implements InitializingBean {
     }
 
 
-    private void innerReScheduleJob(JobParam jobParam) throws SchedulerException {
-        JobDetail jobDetail = getJobDetailByJobParam(jobParam);
-        JobKey jobKey = jobDetail.getKey();
-        scheduler.deleteJob(jobKey);
-        innerAddJob(jobParam);
-    }
+
 
     private void innerStopJob(JobParam jobParam) throws SchedulerException {
         JobKey jobKey = JobKey.jobKey(jobParam.getJobName(), jobParam.getJobGroup());
         scheduler.deleteJob(jobKey);
+        if(jobParam.isBalance())
+            balanceJob.remove(jobKey);
     }
-
-
 
 
     private CronTrigger getCronTrigger(JobParam jobParam, JobKey jobKey) {

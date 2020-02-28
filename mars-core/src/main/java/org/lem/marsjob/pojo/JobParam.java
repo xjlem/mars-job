@@ -16,6 +16,8 @@ public class JobParam<T> implements Serializable {
     private String jobGroup;
     private String jobName;
     private Integer operationCode = -1;
+    //是否是竞争模式
+    private boolean balance=false;
 
     public JobParam(Class<T> jobClass, String cron, String jobGroup, String jobName) {
         this.jobClass = jobClass;
@@ -87,6 +89,14 @@ public class JobParam<T> implements Serializable {
 
     public void setOperationCode(Integer operationCode) {
         this.operationCode = operationCode;
+    }
+
+    public boolean isBalance() {
+        return balance;
+    }
+
+    public void setBalance(boolean balance) {
+        this.balance = balance;
     }
 
     @Override

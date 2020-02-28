@@ -103,6 +103,7 @@ public class MarsScheduledAnnotationBeanPostProcessor
             if (!Strings.isNullOrEmpty(scheduled.endTime()))
                 jobParam.setEndTime(MS_SDF.get().parse(scheduled.endTime()));
             jobParam.setJobData(jobMap);
+            jobParam.setBalance(scheduled.balance());
             jobScheduleService.addJob(jobParam, false);
             logger.info("添加注解定时任务，class:{},method:{},cron:{},group:{},name:{}", jobMap.get("class"), jobMap.get("method"), cron, group, name);
         } catch (Exception e) {

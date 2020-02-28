@@ -2,6 +2,7 @@ package org.lem.marsjob.zk;
 
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
+import org.I0Itec.zkclient.IZkChildListener;
 import org.I0Itec.zkclient.IZkDataListener;
 import org.I0Itec.zkclient.IZkStateListener;
 import org.I0Itec.zkclient.ZkClient;
@@ -23,18 +24,17 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.stream.Collectors;
 
 
-public class ZkService   {
+public class ZkService {
     protected Logger LOG = LoggerFactory.getLogger(this.getClass());
 
     private Object lock = new Object();
 
     private String zkAddress;
     private String projectGroup;
-    private Integer jobEventExpireDay=7;
-    private Integer jobExecuteLogExpireDay=7;
+    private Integer jobEventExpireDay = 7;
+    private Integer jobExecuteLogExpireDay = 7;
 
     private EventHandler eventHandler = new DefaultHandler();
-
 
 
     private String zkJobPath;
@@ -44,7 +44,6 @@ public class ZkService   {
 
     private String nodeName;
     private String registPath;
-
 
 
     private volatile String synNodeVersion;
@@ -57,24 +56,15 @@ public class ZkService   {
 
     private ConcurrentLinkedQueue<JobSynListener> listeners = new ConcurrentLinkedQueue();
 
+    private ConcurrentLinkedQueue<RebalanceHandler> rebalanceHandlersListeners = new ConcurrentLinkedQueue();
 
 
     private Set<String> selfEvent = new HashSet<>();
 
-    private static ThreadLocal<SimpleDateFormat> DAY_SDF = new ThreadLocal<SimpleDateFormat>() {
-        @Override
-        protected SimpleDateFormat initialValue() {
-            return new SimpleDateFormat("yyyyMMdd");
-        }
-    };
+    private static ThreadLocal<SimpleDateFormat> DAY_SDF =
+            ThreadLocal.withInitial(()-> new SimpleDateFormat("yyyyMMdd"));
 
-    private static ThreadLocal<SimpleDateFormat> MS_SDF = new ThreadLocal<SimpleDateFormat>() {
-        @Override
-        protected SimpleDateFormat initialValue() {
-            return new SimpleDateFormat("yyyyMMddHHmmss");
-        }
-    };
-
+    private static ThreadLocal<SimpleDateFormat> MS_SDF = ThreadLocal.withInitial(()-> new SimpleDateFormat("yyyyMMddHHmmss"));
 
     public void sendOperation(JobParam jobParam) {
         if (jobParam.getOperationCode() == -1)
@@ -107,9 +97,7 @@ public class ZkService   {
     }
 
 
-    private void addListener(JobSynListener listener) {
-        listeners.add(listener);
-    }
+
 
 
     //TODO 会导致自己的update唤醒自己，下游listener要做事件去重,分片任务在连接状态为disconnect到expire期间可能出现任务丢失，可以任务扫描进行补偿（分片任务存在本身结构存在单点问题）
@@ -120,21 +108,21 @@ public class ZkService   {
         initPath();
         regist();
         currentEventVersion = getMax(zkClient.getChildren(zkJobEventPath));
-        listeners.add(new JobSynListener() {
-            @Override
-            public void onTriggle() {
-                try {
-                    List<String> currentChilds = zkClient.getChildren(zkJobEventPath);
-                    String max = getMax(currentChilds);
-                    if (max == null || (currentEventVersion != null && max.compareTo(currentEventVersion) < 0)) return;
-                    List<String> unHandleEvents = getUnhandleEvent(currentEventVersion, currentChilds);
-                    currentEventVersion = max;
-                    handleEvents(unHandleEvents);
-                } catch (Exception e) {
-                    LOG.error("同步任务出错", e);
-                }
+        listeners.add(() ->
+        {
+            try {
+                List<String> currentChilds = zkClient.getChildren(zkJobEventPath);
+                String max = getMax(currentChilds);
+                if (max == null || (currentEventVersion != null && max.compareTo(currentEventVersion) < 0)) return;
+                List<String> unHandleEvents = getUnhandleEvent(currentEventVersion, currentChilds);
+                currentEventVersion = max;
+                handleEvents(unHandleEvents);
+            } catch (Exception e) {
+                LOG.error("同步任务出错", e);
             }
         });
+
+        rebalanceHandlersListeners.add(()->{});
 
         zkClient.subscribeDataChanges(zkJobSynNodePath, new IZkDataListener() {
             @Override
@@ -148,6 +136,10 @@ public class ZkService   {
             public void handleDataDeleted(String dataPath) throws Exception {
 
             }
+        });
+
+        zkClient.subscribeChildChanges(zkAppNode, (path,list)-> {
+            rebalanceHandlersListeners.forEach(e->e.triggle());
         });
 
         zkClient.subscribeStateChanges(new IZkStateListener() {
@@ -165,6 +157,7 @@ public class ZkService   {
 
             }
         });
+
 
     }
 
@@ -283,6 +276,15 @@ public class ZkService   {
         return shardingParams;
     }
 
+    public ShardingParams getShardingParams() {
+        List<String> nodes = zkClient.getChildren(zkAppNode);
+        int index = nodes.indexOf(nodeName);
+        int total = nodes.size();
+        ShardingParams shardingParams = new ShardingParams(index, total);
+        return shardingParams;
+    }
+
+
     private boolean createPersistent(String path) {
         if (zkClient.exists(path)) return false;
         try {
@@ -317,6 +319,10 @@ public class ZkService   {
         registPath = path;
     }
 
+    public List<String> getRegistPath() {
+        return zkClient.getChildren(zkAppNode);
+    }
+
     public void unRegist() {
         if (registPath != null)
             zkClient.delete(registPath);
@@ -329,6 +335,9 @@ public class ZkService   {
 
     public interface EventHandler {
         void handleEvent(JobParam jobParam);
+    }
+    public interface RebalanceHandler{
+        void triggle();
     }
 
     private class DefaultHandler implements EventHandler {
@@ -363,4 +372,7 @@ public class ZkService   {
         this.eventHandler = eventHandler;
     }
 
+    public  void addRebalanceListener(RebalanceHandler rebalanceHandler){
+        rebalanceHandlersListeners.add(rebalanceHandler);
+    }
 }

@@ -40,4 +40,6 @@ public @interface SimpleJobSchedule {
      */
     String endTime() default "";
 
+    boolean balance() default false;
+
 }

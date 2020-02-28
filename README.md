@@ -3,7 +3,8 @@
     该框架可以做什么
     1. 继承simplejob保证多机同时只有一台机器执行任务
     2. 继承shardingjob可以获取分片，多机协调完成任务
-    3. 任务在一台机器上添加，可以选择同步到集群上，方便集群间任务启停同步
+    3. 任务在一台机器上添加，可以选择同步到集群上，方便集群间任务启停同步,动态添加任务
+    4. 任务负载均衡方式，默认随机方式，可配置任务的执行调度方式改为一致性hash的方式，保证宕机后任务的分配。
 ## 快速开始
 ### 1.POM依赖
  ```$xslt
@@ -57,13 +58,14 @@ public class ExampleJob extends SimpleJobExecutor {
 ```$xslt
 @Component
 public class Job {
-    @SimpleJobSchedule(cron = "* * * * * ?", group = "a", name = "b", startTime = "2019-01-21 12:00:00", endTime = "2019-01-21 18:00:00")
+    @SimpleJobSchedule(cron = "* * * * * ?", group = "a", name = "b", startTime = "2019-01-21 12:00:00", endTime = "2019-01-21 18:00:00",balance=true)
     public void say() {
         System.out.println("-------say--------------");
     }
 }
 ```
 其中cron为必填项，group默认为类名，name默认为方法名，同一方法可以有多个注解
+balance表明采用一致性hash
 ### 6. 例子
     如不使用spring框架，可参考mars-job-example中mars-example-java模块
     
