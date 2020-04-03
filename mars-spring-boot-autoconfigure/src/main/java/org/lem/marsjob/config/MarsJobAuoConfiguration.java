@@ -2,6 +2,7 @@ package org.lem.marsjob.config;
 
 import org.lem.marsjob.annotation.MarsScheduledAnnotationBeanPostProcessor;
 import org.lem.marsjob.service.JobScheduleService;
+import org.lem.marsjob.service.JobScheduleServiceFactory;
 import org.lem.marsjob.zk.ZkService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,13 +56,14 @@ public class MarsJobAuoConfiguration {
 
 
     @Bean
+    @ConditionalOnMissingBean
     public JobScheduleService createJobService(ZkService zkService, SchedulerFactoryBean schedulerFactoryBean) {
-        System.out.println("create JobScheduleService");
-        JobScheduleService jobScheduleService = new JobScheduleService(zkService, schedulerFactoryBean);
-        return jobScheduleService;
+        JobScheduleServiceFactory factory=new JobScheduleServiceFactory(zkService,schedulerFactoryBean);
+        return factory.build();
     }
 
     @Bean
+    @ConditionalOnMissingBean
     public MarsScheduledAnnotationBeanPostProcessor createMarsScheduledAnnotationBeanPostProcessor() {
         MarsScheduledAnnotationBeanPostProcessor processor = new MarsScheduledAnnotationBeanPostProcessor();
         return processor;

@@ -1,5 +1,8 @@
 package org.lem.marsjob.service;
 
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
+import com.google.common.collect.ImmutableList;
 import com.google.common.hash.HashCode;
 import com.google.common.hash.Hashing;
 import org.lem.marsjob.enums.Operation;
@@ -12,7 +15,6 @@ import org.quartz.impl.matchers.GroupMatcher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.InitializingBean;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.quartz.SchedulerFactoryBean;
 
 import java.nio.charset.Charset;
@@ -21,6 +23,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class JobScheduleService implements InitializingBean {
     protected Logger LOG = LoggerFactory.getLogger(this.getClass());
+    private final ZkService.EventHandler DEFAULT_HANDLER= new DefaultEventHandler();
+    private final ZkService.RebalanceHandler DEFAULT_REBALANCE= new DefaultRebalance();
 
     public static final String SCHEDULE_SERVICE_KEY = "schedule_service_key";
 
@@ -30,73 +34,82 @@ public class JobScheduleService implements InitializingBean {
 
     private Map<JobKey,JobParam> balanceJob=new ConcurrentHashMap<>();
 
+    private Supplier<ShardingParams> shardingParams;
+
     private Scheduler scheduler;
+
     private volatile boolean inited = false;
-    private List<JobEvenetListener> listeners = new ArrayList<>();
 
-    public List<JobEvenetListener> getListeners() {
-        return listeners;
-    }
+    private ImmutableList<JobEvenetListener> listeners = ImmutableList.of();
 
-    public void setListeners(List<JobEvenetListener> listeners) {
-        this.listeners = listeners;
-    }
 
-    public JobScheduleService(ZkService zkService, SchedulerFactoryBean schedulerFactoryBean) {
+    JobScheduleService(ZkService zkService, SchedulerFactoryBean schedulerFactoryBean, ZkService.EventHandler eventHandler, List<JobEvenetListener> listeners, List<ZkService.RebalanceHandler> rebalanceHandlers) {
         this.zkService = zkService;
         this.schedulerFactoryBean = schedulerFactoryBean;
-        zkService.setEventHandler(eventHandler());
-        zkService.addRebalanceListener(reBalanceJob());
+        if(eventHandler==null)
+            zkService.setEventHandler(DEFAULT_HANDLER);
+        else
+            zkService.setEventHandler(eventHandler);
+        if(listeners!=null) {
+            this.listeners = ImmutableList.copyOf(listeners);
+        }
+        if(rebalanceHandlers!=null&&rebalanceHandlers.size()>0) {
+            rebalanceHandlers.forEach(e->zkService.addRebalanceListener(e));
+        }else
+            zkService.addRebalanceListener(DEFAULT_REBALANCE);
     }
 
-    public ZkService.RebalanceHandler reBalanceJob(){
-       return new ZkService.RebalanceHandler() {
+
+
+
+    class DefaultRebalance implements ZkService.RebalanceHandler {
            @Override
            public void triggle() {
+               shardingParams= Suppliers.memoize(()->zkService.getShardingParams());
                balanceJob.keySet().forEach(jobKey -> {
                    try {
                        scheduler.deleteJob(jobKey);
                    } catch (SchedulerException e) {
-
+                       LOG.error("",e);
                    }
                });
                balanceJob.values().forEach(jobParam -> {
                    try {
                        addJob(jobParam,false);
                    } catch (SchedulerException e) {
-                       e.printStackTrace();
+                            LOG.error("",e);
                    }
                });
-           }
+
        };
     }
 
-
-    public ZkService.EventHandler eventHandler() {
-        ZkService.EventHandler eventHandler = new ZkService.EventHandler() {
-            @Override
-            public void handleEvent(JobParam jobParam) {
-                Operation operation = Operation.getOperationByCode(jobParam.getOperationCode());
-                try {
-                    switch (operation) {
-                        case REMOVE:
-                            innerStopJob(jobParam);
-                            break;
-                        case UPDATE_CRON:
-                            innerStopJob(jobParam);
-                            innerAddJob(jobParam);
-                            break;
-                        case ADD:
-                            innerAddJob(jobParam);
-                            break;
-                    }
-                } catch (Exception e) {
-                    LOG.error("handle event error:", jobParam, e);
+     class DefaultEventHandler implements ZkService.EventHandler{
+        @Override
+        public void handleEvent(JobParam jobParam) {
+            listeners.forEach(e->e.listen(jobParam));
+            Operation operation = Operation.getOperationByCode(jobParam.getOperationCode());
+            try {
+                switch (operation) {
+                    case REMOVE:
+                        innerStopJob(jobParam);
+                        break;
+                    case UPDATE_CRON:
+                        innerStopJob(jobParam);
+                        innerAddJob(jobParam);
+                        break;
+                    case ADD:
+                        innerAddJob(jobParam);
+                        break;
                 }
+            } catch (Exception e) {
+                LOG.error("handle event error:", jobParam, e);
             }
-        };
-        return eventHandler;
+        }
+
     }
+
+
 
 
 
@@ -113,7 +126,7 @@ public class JobScheduleService implements InitializingBean {
 
     private boolean isSelfJob(JobParam jobParam) {
         if (jobParam.isBalance()){
-            ShardingParams params = zkService.getShardingParams();
+            ShardingParams params = shardingParams.get();
             HashCode hashCode = Hashing.murmur3_32().hashString(jobParam.getJobGroup() + "_" + jobParam.getJobName(), Charset.defaultCharset());
             int index = Hashing.consistentHash(hashCode, params.getTotal());
             if (index != params.getIndex())
@@ -213,6 +226,7 @@ public class JobScheduleService implements InitializingBean {
         inited = true;
         scheduler = schedulerFactoryBean.getScheduler();
         scheduler.getContext().put(SCHEDULE_SERVICE_KEY, this);
+        shardingParams= Suppliers.memoize(()->zkService.getShardingParams());
     }
 
     /**
@@ -282,6 +296,14 @@ public class JobScheduleService implements InitializingBean {
 
     public void setZkService(ZkService zkService) {
         this.zkService = zkService;
+    }
+
+    public ImmutableList<JobEvenetListener> getListeners() {
+        return listeners;
+    }
+
+    public void setListeners(ImmutableList<JobEvenetListener> listeners) {
+        this.listeners = listeners;
     }
 
 
