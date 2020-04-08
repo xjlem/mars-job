@@ -48,7 +48,7 @@ public class MarsJobAuoConfiguration {
 
 
 
-    @Bean(initMethod = "init", destroyMethod = "unRegist")
+    @Bean(initMethod = "init", destroyMethod = "close")
     public ZkService zkService() {
         ZkService zkService = new ZkService(properties.getZkAddress(), properties.getProjectGroup(), properties.getJobEventExpireDay(), properties.getJobEventExpireDay());
         return zkService;

@@ -1,8 +1,8 @@
 package org.lem.marsjob.pojo;
 
+import com.google.common.base.Objects;
+
 import java.io.Serializable;
-import java.util.HashMap;
-import java.util.Map;
 
 public class ShardingParams implements Serializable {
     //当前节点序号0开始
@@ -42,9 +42,17 @@ public class ShardingParams implements Serializable {
                 '}';
     }
 
-    public static void main(String[] args) {
-        JobParam jobParam=new JobParam(JobParam.class,"","","");
-        Map<String,Object> map=new HashMap<>();
-        jobParam.setJobData(map);
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        ShardingParams params = (ShardingParams) o;
+        return index == params.index &&
+                total == params.total;
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hashCode(index, total);
     }
 }

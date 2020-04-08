@@ -65,7 +65,10 @@ public class JobScheduleService implements InitializingBean {
     class DefaultRebalance implements ZkService.RebalanceHandler {
            @Override
            public void triggle() {
+               ShardingParams old=shardingParams.get();
                shardingParams= Suppliers.memoize(()->zkService.getShardingParams());
+               if(old.equals(shardingParams.get()))
+                   return;
                balanceJob.keySet().forEach(jobKey -> {
                    try {
                        scheduler.deleteJob(jobKey);
@@ -84,7 +87,7 @@ public class JobScheduleService implements InitializingBean {
        };
     }
 
-     class DefaultEventHandler implements ZkService.EventHandler{
+    class DefaultEventHandler implements ZkService.EventHandler{
         @Override
         public void handleEvent(JobParam jobParam) {
             listeners.forEach(e->e.listen(jobParam));
@@ -118,9 +121,8 @@ public class JobScheduleService implements InitializingBean {
             jobParam.setOperationCode(Operation.ADD.getOperationCode());
             sendOperation(jobParam);
         }
-        if (isSelfJob(jobParam)) {
             innerAddJob(jobParam);
-        }
+
 
     }
 
@@ -149,8 +151,7 @@ public class JobScheduleService implements InitializingBean {
             sendOperation(jobParam);
         }
         innerStopJob(jobParam);
-        if(isSelfJob(jobParam))
-            innerAddJob(jobParam);
+        innerAddJob(jobParam);
     }
 
 
@@ -171,9 +172,11 @@ public class JobScheduleService implements InitializingBean {
             innerStopJob(jobParam);
         }
         CronTrigger trigger = getCronTrigger(jobParam, jobKey);
-        scheduler.scheduleJob(jobDetail, trigger);
-        if(jobParam.isBalance())
-            balanceJob.put(jobKey,jobParam);
+        if (jobParam.isBalance())
+            balanceJob.put(jobKey, jobParam);
+        if (isSelfJob(jobParam)) {
+            scheduler.scheduleJob(jobDetail, trigger);
+        }
     }
 
     private JobDetail getJobDetailByJobParam(JobParam jobParam) {

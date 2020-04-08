@@ -2,7 +2,6 @@ package org.lem.marsjob.zk;
 
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
-import org.I0Itec.zkclient.IZkChildListener;
 import org.I0Itec.zkclient.IZkDataListener;
 import org.I0Itec.zkclient.IZkStateListener;
 import org.I0Itec.zkclient.ZkClient;
@@ -20,11 +19,11 @@ import org.slf4j.LoggerFactory;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.*;
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
 
-public class ZkService {
+public class ZkService extends Thread{
     protected Logger LOG = LoggerFactory.getLogger(this.getClass());
 
     private Object lock = new Object();
@@ -35,7 +34,6 @@ public class ZkService {
     private Integer jobExecuteLogExpireDay = 7;
 
     private EventHandler eventHandler = new DefaultHandler();
-
 
     private String zkJobPath;
     private String zkJobSynNodePath;
@@ -54,10 +52,11 @@ public class ZkService {
 
     private volatile boolean inited = false;
 
-    private ConcurrentLinkedQueue<JobSynListener> listeners = new ConcurrentLinkedQueue();
+    private volatile boolean stop = false;
+
+    private JobSynListener jobSynlistener=new JobSynListener();
 
     private ConcurrentLinkedQueue<RebalanceHandler> rebalanceHandlersListeners = new ConcurrentLinkedQueue();
-
 
     private Set<String> selfEvent = new HashSet<>();
 
@@ -65,6 +64,12 @@ public class ZkService {
             ThreadLocal.withInitial(()-> new SimpleDateFormat("yyyyMMdd"));
 
     private static ThreadLocal<SimpleDateFormat> MS_SDF = ThreadLocal.withInitial(()-> new SimpleDateFormat("yyyyMMddHHmmss"));
+
+    private LinkedBlockingQueue<ZkServiceEvent> zkEventQueue =new LinkedBlockingQueue<>();
+
+    private ScheduledExecutorService scheduledExecutorService= Executors.newSingleThreadScheduledExecutor();
+
+
 
     public void sendOperation(JobParam jobParam) {
         if (jobParam.getOperationCode() == -1)
@@ -108,30 +113,16 @@ public class ZkService {
         initPath();
         regist();
         currentEventVersion = getMax(zkClient.getChildren(zkJobEventPath));
-        listeners.add(() ->
-        {
-            try {
-                List<String> currentChilds = zkClient.getChildren(zkJobEventPath);
-                String max = getMax(currentChilds);
-                if (max == null || (currentEventVersion != null && max.compareTo(currentEventVersion) < 0)) return;
-                List<String> unHandleEvents = getUnhandleEvent(currentEventVersion, currentChilds);
-                currentEventVersion = max;
-                handleEvents(unHandleEvents);
-            } catch (Exception e) {
-                LOG.error("同步任务出错", e);
-            }
-        });
 
-        rebalanceHandlersListeners.add(()->{});
 
+        //job syn watcher
         zkClient.subscribeDataChanges(zkJobSynNodePath, new IZkDataListener() {
             @Override
             public void handleDataChange(String dataPath, Object data) throws Exception {
                 String zkJobVersion = zkClient.readData(dataPath);
                 synNodeVersion = zkJobVersion;
-                listeners.forEach(e -> e.onTriggle());
+                zkEventQueue.add(ZkServiceEvent.SYNJOB);
             }
-
             @Override
             public void handleDataDeleted(String dataPath) throws Exception {
 
@@ -139,9 +130,10 @@ public class ZkService {
         });
 
         zkClient.subscribeChildChanges(zkAppNode, (path,list)-> {
-            rebalanceHandlersListeners.forEach(e->e.triggle());
+            zkEventQueue.add(ZkServiceEvent.REBALANCE);
         });
 
+        //reregist
         zkClient.subscribeStateChanges(new IZkStateListener() {
             @Override
             public void handleStateChanged(Watcher.Event.KeeperState state) throws Exception {
@@ -157,8 +149,44 @@ public class ZkService {
 
             }
         });
+        scheduledExecutorService.scheduleAtFixedRate(()->{
+            zkEventQueue.add(ZkServiceEvent.REBALANCE);
+        },20,20, TimeUnit.SECONDS);
+        scheduledExecutorService.scheduleAtFixedRate(()->{
+            zkEventQueue.add(ZkServiceEvent.SYNJOB);
+        },15,20, TimeUnit.SECONDS);
+        this.start();
+    }
 
+    public void close(){
+        stop=true;
+        this.interrupt();
+        unRegist();
 
+    }
+    private void unRegist() {
+        if (registPath != null)
+            zkClient.delete(registPath);
+    }
+
+    @Override
+    public void run() {
+        while (!stop){
+            try {
+                ZkServiceEvent event=zkEventQueue.take();
+                switch (event){
+                    case SYNJOB:
+                        jobSynlistener.onTriggle();
+                        break;
+                    case REBALANCE:
+                        rebalanceHandlersListeners.forEach(e->e.triggle());
+                        break;
+                    default:break;
+                }
+            } catch (InterruptedException e) {
+                LOG.warn("",e);
+            }
+        }
     }
 
     private void initPath() {
@@ -323,14 +351,22 @@ public class ZkService {
         return zkClient.getChildren(zkAppNode);
     }
 
-    public void unRegist() {
-        if (registPath != null)
-            zkClient.delete(registPath);
-    }
 
 
-    public interface JobSynListener {
-        void onTriggle();
+
+    private class JobSynListener {
+        void onTriggle(){
+            try {
+                List<String> currentChilds = zkClient.getChildren(zkJobEventPath);
+                String max = getMax(currentChilds);
+                if (max == null || (currentEventVersion != null && max.compareTo(currentEventVersion) <= 0)) return;
+                List<String> unHandleEvents = getUnhandleEvent(currentEventVersion, currentChilds);
+                currentEventVersion = max;
+                handleEvents(unHandleEvents);
+            } catch (Exception e) {
+                LOG.error("同步任务出错", e);
+            }
+        }
     }
 
     public interface EventHandler {
@@ -375,4 +411,8 @@ public class ZkService {
     public  void addRebalanceListener(RebalanceHandler rebalanceHandler){
         rebalanceHandlersListeners.add(rebalanceHandler);
     }
+    enum  ZkServiceEvent{
+        REBALANCE,SYNJOB
+    }
 }
+
