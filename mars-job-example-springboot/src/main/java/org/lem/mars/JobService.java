@@ -35,7 +35,7 @@ public class JobService implements InitializingBean {
         jobScheduleService.addJob(jobParam,true);*/
     }
 
-    public void addSimpleJob() throws SchedulerException, ParseException {
+    public void addSimpleJob() throws Exception {
         JobParam jobParam = new JobParam(SimpleJob.class, "* * * * * ?", "0", "0");
         jobParam.setStartTime(MS_SDF.get().parse("2018-12-23 0:00:00"));
         jobParam.setEndTime(MS_SDF.get().parse("2020-04-23 0:00:00"));
@@ -56,9 +56,6 @@ public class JobService implements InitializingBean {
 
     @SimpleJobSchedule(cron = "* * * * * ?")
     private void say() throws SchedulerException {
-        Set<String> allScheduledJobs = jobScheduleService.getScheduleJobsDetail();
-        System.out.println(allScheduledJobs.size());
-        System.out.println(allScheduledJobs);
     }
 
 

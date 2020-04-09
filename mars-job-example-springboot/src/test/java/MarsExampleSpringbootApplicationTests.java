@@ -9,16 +9,7 @@ import org.springframework.test.context.junit4.SpringRunner;
 @SpringBootTest
 public class MarsExampleSpringbootApplicationTests {
 
-    @Autowired
-    private ZkService zkService;
 
-    @Test
-    public void contextLoads() {
-    }
-    @Test
-    public void testClear(){
-        zkService.clearOldZkValue();
-    }
 
 }
 

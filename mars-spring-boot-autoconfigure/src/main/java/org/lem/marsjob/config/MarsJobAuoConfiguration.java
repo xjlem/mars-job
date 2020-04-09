@@ -1,14 +1,15 @@
 package org.lem.marsjob.config;
 
 import org.lem.marsjob.annotation.MarsScheduledAnnotationBeanPostProcessor;
+import org.lem.marsjob.mq.MqService;
 import org.lem.marsjob.service.JobScheduleService;
 import org.lem.marsjob.service.JobScheduleServiceFactory;
+import org.lem.marsjob.service.JobSynService;
 import org.lem.marsjob.zk.ZkService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.*;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -48,17 +49,25 @@ public class MarsJobAuoConfiguration {
 
 
 
+    @ConditionalOnMissingClass(value = "org.lem.marsjob.mq.MqService")
     @Bean(initMethod = "init", destroyMethod = "close")
-    public ZkService zkService() {
-        ZkService zkService = new ZkService(properties.getZkAddress(), properties.getProjectGroup(), properties.getJobEventExpireDay(), properties.getJobEventExpireDay());
+    public ZkService zkService(SchedulerFactoryBean schedulerFactoryBean) {
+        ZkService zkService = new ZkService(properties.getZkAddress(), properties.getProjectGroup(), properties.getJobEventExpireDay(), properties.getJobEventExpireDay(),schedulerFactoryBean);
         return zkService;
+    }
+
+    @ConditionalOnProperty(value = "mars.nameserver")
+    @Bean(initMethod = "init", destroyMethod = "close")
+    public MqService mqService(SchedulerFactoryBean schedulerFactoryBean) {
+        MqService mqService = new MqService(properties.getZkAddress(),properties.getNameserver(), properties.getProjectGroup(), schedulerFactoryBean);
+        return mqService;
     }
 
 
     @Bean
     @ConditionalOnMissingBean
-    public JobScheduleService createJobService(ZkService zkService, SchedulerFactoryBean schedulerFactoryBean) {
-        JobScheduleServiceFactory factory=new JobScheduleServiceFactory(zkService,schedulerFactoryBean);
+    public JobScheduleService createJobService(JobSynService jobSynService) {
+        JobScheduleServiceFactory factory=new JobScheduleServiceFactory(jobSynService);
         return factory.build();
     }
 

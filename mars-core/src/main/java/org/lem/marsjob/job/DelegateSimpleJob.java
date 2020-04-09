@@ -1,20 +1,20 @@
 package org.lem.marsjob.job;
 
-import org.quartz.JobExecutionContext;
-import org.quartz.JobExecutionException;
+import org.lem.marsjob.pojo.ExecuteJobParam;
 import org.springframework.context.ApplicationContext;
 import org.springframework.util.ReflectionUtils;
 
 import java.lang.reflect.Method;
+import java.util.Map;
 
 public class DelegateSimpleJob extends SimpleJobExecutor {
 
     @Override
-    protected void internalJobExecute(JobExecutionContext jobExecutionContext) throws JobExecutionException {
+    public void execute(ExecuteJobParam executeJobParam) {
         try {
-            ApplicationContext applicationContext = ((ApplicationContext) jobExecutionContext.getScheduler().getContext().get("applicationContext"));
-            String clazzName = (String) jobExecutionContext.getMergedJobDataMap().get("class");
-            String methodName = (String) jobExecutionContext.getMergedJobDataMap().get("method");
+            ApplicationContext applicationContext = (ApplicationContext) executeJobParam.getContext();
+            String clazzName = executeJobParam.getJobDataMap().get("class");
+            String methodName = executeJobParam.getJobDataMap().get("method");
             Class clazz = Thread.currentThread().getContextClassLoader().loadClass(clazzName);
             Object delegateObject = applicationContext.getBean(clazz);
             Method method = clazz.getDeclaredMethod(methodName);
@@ -23,6 +23,5 @@ public class DelegateSimpleJob extends SimpleJobExecutor {
         } catch (Exception e) {
             throw new RuntimeException("execute job fail",e);
         }
-
     }
 }

@@ -1,7 +1,7 @@
 package org.lem.marsjob.service;
 
 import com.google.common.base.Preconditions;
-import org.lem.marsjob.zk.ZkService;
+import org.lem.marsjob.EventHandler;
 import org.springframework.scheduling.quartz.SchedulerFactoryBean;
 
 import java.util.ArrayList;
@@ -10,17 +10,11 @@ import java.util.List;
 public class JobScheduleServiceFactory {
     private List<JobEvenetListener> evenetListeners=new ArrayList<>();
 
-    private ZkService.EventHandler eventHandler;
+    private JobSynService jobSynService;
 
-    private List<ZkService.RebalanceHandler> rebalanceListeners=new ArrayList<>();
 
-    private ZkService zkService;
-
-    private SchedulerFactoryBean schedulerFactoryBean;
-
-    public JobScheduleServiceFactory(ZkService zkService, SchedulerFactoryBean schedulerFactoryBean) {
-        this.zkService = zkService;
-        this.schedulerFactoryBean = schedulerFactoryBean;
+    public JobScheduleServiceFactory(JobSynService zkService) {
+        this.jobSynService = zkService;
     }
 
     public List<JobEvenetListener> getEvenetListeners() {
@@ -32,8 +26,7 @@ public class JobScheduleServiceFactory {
     }
 
     public JobScheduleService build(){
-        Preconditions.checkNotNull(zkService);
-        Preconditions.checkNotNull(schedulerFactoryBean);
-        return new  JobScheduleService( zkService,  schedulerFactoryBean,  eventHandler,  evenetListeners, rebalanceListeners);
+        Preconditions.checkNotNull(jobSynService);
+        return new  JobScheduleService(jobSynService,  evenetListeners);
     }
 }

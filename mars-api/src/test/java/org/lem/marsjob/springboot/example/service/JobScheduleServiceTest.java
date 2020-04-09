@@ -13,25 +13,24 @@ public class JobScheduleServiceTest {
 
     @Before
     public void init() throws Exception {
-        jobScheduleService = new JobScheduleService();
-        ZkService zkService = new ZkService("localhost", "mars");
-        zkService.init();
         SchedulerFactoryBean schedulerFactoryBean = new SchedulerFactoryBean();
         schedulerFactoryBean.afterPropertiesSet();
-        jobScheduleService.setZkService(zkService);
-        jobScheduleService.setSchedulerFactoryBean(schedulerFactoryBean);
+        ZkService zkService = new ZkService("localhost", "mars",7,7,schedulerFactoryBean);
+        zkService.init();
+
+        jobScheduleService = new JobScheduleService(zkService,null);
         jobScheduleService.afterPropertiesSet();
     }
 
     @Test
-    public void testAddJob() throws SchedulerException, InterruptedException {
+    public void testAddJob() throws Exception {
         JobParam jobParam = new JobParam(Job.class, "* * * * * ?", "mars", "mars");
         jobScheduleService.addJob(jobParam, false);
         Thread.sleep(10000);
     }
 
     @Test
-    public void testDeleteJob() throws SchedulerException, InterruptedException {
+    public void testDeleteJob() throws Exception {
         JobParam jobParam = new JobParam(Job.class, "* * * * * ?", "mars", "mars");
         jobScheduleService.deleteJob(jobParam,true);
         Thread.sleep(10000);

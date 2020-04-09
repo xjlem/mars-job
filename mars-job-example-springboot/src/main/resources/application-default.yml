@@ -3,5 +3,6 @@ mars:
   project_group: mars
   job_event_expire_day: 0
   job_execute_log_expire_day: 0
+  nameserver: 192.168.11.29:9876
 
 testabcd: "* * * * * ?"

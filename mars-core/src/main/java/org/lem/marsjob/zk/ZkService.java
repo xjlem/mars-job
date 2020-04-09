@@ -2,38 +2,56 @@ package org.lem.marsjob.zk;
 
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
+import com.google.common.base.Supplier;
+import com.google.common.base.Suppliers;
+import com.google.common.hash.HashCode;
+import com.google.common.hash.Hashing;
 import org.I0Itec.zkclient.IZkDataListener;
 import org.I0Itec.zkclient.IZkStateListener;
 import org.I0Itec.zkclient.ZkClient;
 import org.apache.zookeeper.Watcher;
+import org.lem.marsjob.EventHandler;
 import org.lem.marsjob.enums.Operation;
+import org.lem.marsjob.job.DelegateSimpleJob;
+import org.lem.marsjob.pojo.ExecuteJobParam;
 import org.lem.marsjob.pojo.JobParam;
 import org.lem.marsjob.pojo.ShardingParams;
 import org.lem.marsjob.serialize.ZkKryoSerialize;
+import org.lem.marsjob.service.JobSynService;
 import org.lem.marsjob.util.PathUtil;
 import org.lem.marsjob.util.Utils;
-import org.quartz.SchedulerException;
+import org.quartz.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.BeansException;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.ApplicationContextAware;
+import org.springframework.scheduling.quartz.SchedulerFactoryBean;
 
+import java.nio.charset.Charset;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.*;
+import java.util.Calendar;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
 
-public class ZkService extends Thread{
+public class ZkService extends Thread implements JobSynService , ApplicationContextAware {
     protected Logger LOG = LoggerFactory.getLogger(this.getClass());
 
+
     private Object lock = new Object();
+
+    private ApplicationContext applicationContext;
 
     private String zkAddress;
     private String projectGroup;
     private Integer jobEventExpireDay = 7;
     private Integer jobExecuteLogExpireDay = 7;
 
-    private EventHandler eventHandler = new DefaultHandler();
+    private final ZkService.RebalanceHandler DEFAULT_REBALANCE= new DefaultRebalance();
+
 
     private String zkJobPath;
     private String zkJobSynNodePath;
@@ -69,6 +87,25 @@ public class ZkService extends Thread{
 
     private ScheduledExecutorService scheduledExecutorService= Executors.newSingleThreadScheduledExecutor();
 
+    private Supplier<ShardingParams> shardingParams;
+
+    private Map<JobKey,JobParam> balanceJob=new ConcurrentHashMap<>();
+
+
+    private SchedulerFactoryBean schedulerFactoryBean;
+
+    private Scheduler scheduler;
+
+    private boolean isSelfJob(JobParam jobParam) {
+        if (jobParam.isBalance()){
+            ShardingParams params = shardingParams.get();
+            HashCode hashCode = Hashing.murmur3_32().hashString(jobParam.getJobGroup() + "_" + jobParam.getJobName(), Charset.defaultCharset());
+            int index = Hashing.consistentHash(hashCode, params.getTotal());
+            if (index != params.getIndex())
+                return false;
+        }
+        return true;
+    }
 
 
     public void sendOperation(JobParam jobParam) {
@@ -82,18 +119,22 @@ public class ZkService extends Thread{
             String eventPath = zkClient.createPersistentSequential(zkJobEventPath + "/", jobParam);
             selfEvent.add(eventPath.substring(eventPath.lastIndexOf("/") + 1));
         }
+        updateJobSynNode();
     }
+
+
 
 
     public ZkService() {
 
     }
 
-    public ZkService(String zkAddress, String projectGroup, Integer jobEventExpireDay, Integer jobExecuteLogExpireDay) {
+    public ZkService(String zkAddress, String projectGroup, Integer jobEventExpireDay, Integer jobExecuteLogExpireDay,SchedulerFactoryBean schedulerFactoryBean) {
         this.zkAddress = zkAddress;
         this.projectGroup = projectGroup;
         this.jobEventExpireDay = jobEventExpireDay;
         this.jobExecuteLogExpireDay = jobExecuteLogExpireDay;
+        this.schedulerFactoryBean=schedulerFactoryBean;
     }
 
     public ZkService(String zkAddress, String projectGroup) {
@@ -106,6 +147,7 @@ public class ZkService extends Thread{
 
 
     //TODO 会导致自己的update唤醒自己，下游listener要做事件去重,分片任务在连接状态为disconnect到expire期间可能出现任务丢失，可以任务扫描进行补偿（分片任务存在本身结构存在单点问题）
+    @Override
     public void init() {
         if (inited) return;
         inited = true;
@@ -113,8 +155,27 @@ public class ZkService extends Thread{
         initPath();
         regist();
         currentEventVersion = getMax(zkClient.getChildren(zkJobEventPath));
+        scheduler = schedulerFactoryBean.getScheduler();
+        try {
+            scheduler.getContext().put(SCHEDULE_SERVICE_KEY, this);
+            scheduler.getContext().put(CONTEXT_KEY,applicationContext);
+        } catch (SchedulerException e) {
+            e.printStackTrace();
+        }
+        shardingParams= Suppliers.memoize(()->getShardingParams());
+        addZkListener();
+        scheduledExecutorService.scheduleAtFixedRate(()->{
+            zkEventQueue.add(ZkServiceEvent.REBALANCE);
+        },20,20, TimeUnit.SECONDS);
+        scheduledExecutorService.scheduleAtFixedRate(()->{
+            zkEventQueue.add(ZkServiceEvent.SYNJOB);
+        },15,20, TimeUnit.SECONDS);
+        this.start();
+        rebalanceHandlersListeners.add(DEFAULT_REBALANCE);
+        scheduleClean();
+    }
 
-
+    private void addZkListener(){
         //job syn watcher
         zkClient.subscribeDataChanges(zkJobSynNodePath, new IZkDataListener() {
             @Override
@@ -149,21 +210,53 @@ public class ZkService extends Thread{
 
             }
         });
-        scheduledExecutorService.scheduleAtFixedRate(()->{
-            zkEventQueue.add(ZkServiceEvent.REBALANCE);
-        },20,20, TimeUnit.SECONDS);
-        scheduledExecutorService.scheduleAtFixedRate(()->{
-            zkEventQueue.add(ZkServiceEvent.SYNJOB);
-        },15,20, TimeUnit.SECONDS);
-        this.start();
     }
 
+    @Override
+    public boolean scheduleJob(ExecuteJobParam executeJobParam) {
+        Preconditions.checkNotNull(executeJobParam);
+        String path = PathUtil.getPath(zkJobPath, getTodayDate(), executeJobParam.getJobIdentity(), MS_SDF.get().format(executeJobParam.getFireTime()));
+        return createPersistent(path);
+    }
+
+    @Override
+    public void handleJobParam(JobParam jobParam) {
+        Operation operation = Operation.getOperationByCode(jobParam.getOperationCode());
+        try {
+            switch (operation) {
+                case REMOVE:
+                    innerStopJob(jobParam);
+                    break;
+                case UPDATE_CRON:
+                    innerStopJob(jobParam);
+                    innerAddJob(jobParam);
+                    break;
+                case ADD:
+                    innerAddJob(jobParam);
+                    break;
+            }
+        } catch (Exception e) {
+            LOG.error("handle event error:", jobParam, e);
+        }
+    }
+
+
+    @Override
+    public ShardingParams getShardingParams() {
+        List<String> nodes = zkClient.getChildren(zkAppNode);
+        int index = nodes.indexOf(nodeName);
+        int total = nodes.size();
+        ShardingParams shardingParams = new ShardingParams(index, total);
+        return shardingParams;
+    }
+
+    @Override
     public void close(){
         stop=true;
         this.interrupt();
         unRegist();
-
     }
+
     private void unRegist() {
         if (registPath != null)
             zkClient.delete(registPath);
@@ -215,7 +308,7 @@ public class ZkService extends Thread{
             Operation operation = Operation.getOperationByCode(param.getOperationCode());
             if (operation == null)
                 throw new IllegalArgumentException("CAN NOT PROCESS OPERATION: CODE " + param.getOperationCode());
-            eventHandler.handleEvent(param);
+            handleJobParam(param);
         }
     }
 
@@ -248,8 +341,8 @@ public class ZkService extends Thread{
             return currentEventVersion;
     }
 
-
-    public void clearOldZkValue() {
+    @Override
+    public void clean() {
         LOG.info("clear old zk value");
         deleteExpireJobExecuteLog();
         deleteExpireJobEvent();
@@ -282,35 +375,6 @@ public class ZkService extends Thread{
     }
 
 
-    public boolean scheduleJob(String jobIdentity, Date fireTime) {
-        Preconditions.checkNotNull(jobIdentity);
-        String path = PathUtil.getPath(zkJobPath, getTodayDate(), jobIdentity, MS_SDF.get().format(fireTime));
-        return createPersistent(path);
-    }
-
-    public ShardingParams getShardingParams(String jobIdentity, Date fireTime) {
-        Preconditions.checkNotNull(jobIdentity);
-        String path = PathUtil.getPath(zkJobPath, getTodayDate(), jobIdentity, MS_SDF.get().format(fireTime));
-        ShardingParams shardingParams;
-        if (createPersistent(path)) {
-            List<String> nodes = zkClient.getChildren(zkAppNode);
-            int index = nodes.indexOf(nodeName);
-            int total = nodes.size();
-            shardingParams = new ShardingParams(index, total);
-            zkClient.writeData(path, shardingParams);
-        } else {
-            shardingParams = zkClient.readData(path);
-        }
-        return shardingParams;
-    }
-
-    public ShardingParams getShardingParams() {
-        List<String> nodes = zkClient.getChildren(zkAppNode);
-        int index = nodes.indexOf(nodeName);
-        int total = nodes.size();
-        ShardingParams shardingParams = new ShardingParams(index, total);
-        return shardingParams;
-    }
 
 
     private boolean createPersistent(String path) {
@@ -352,6 +416,75 @@ public class ZkService extends Thread{
     }
 
 
+    private void innerAddJob(JobParam jobParam) throws SchedulerException {
+        if (jobParam.getEndTime() != null && jobParam.getEndTime().before(new Date()))
+            return;
+        JobDetail jobDetail = getJobDetailByJobParam(jobParam);
+        JobKey jobKey = jobDetail.getKey();
+        if (scheduler.checkExists(jobKey)) {
+            innerStopJob(jobParam);
+        }
+        CronTrigger trigger = getCronTrigger(jobParam, jobKey);
+        if (jobParam.isBalance())
+            balanceJob.put(jobKey, jobParam);
+        if (isSelfJob(jobParam)) {
+            scheduler.scheduleJob(jobDetail, trigger);
+        }
+    }
+
+    private CronTrigger getCronTrigger(JobParam jobParam, JobKey jobKey) {
+        TriggerKey triggerKey = new TriggerKey(jobKey.getName(), jobKey.getGroup());
+        TriggerBuilder<Trigger> builder = TriggerBuilder.newTrigger();
+        if (jobParam.getStartTime() != null)
+            builder.startAt(System.currentTimeMillis() < jobParam.getStartTime().getTime() ? jobParam.getStartTime() : new Date());
+        if (jobParam.getEndTime() != null)
+            builder.endAt(jobParam.getEndTime());
+        return builder.withIdentity(triggerKey)
+                .withSchedule(CronScheduleBuilder.cronSchedule(jobParam.getCron()))
+                .build();
+    }
+
+
+    /**
+     * 代理类清除历史数据
+     */
+    private void scheduleClean() {
+        try {
+            JobDetail jobDetail = JobBuilder.newJob(DelegateSimpleJob.class).
+                    withIdentity("clean", "mars").build();
+            jobDetail.getJobDataMap().put("class", JobSynService.class.getName());
+            jobDetail.getJobDataMap().put("method", "clean");
+            JobKey jobKey = jobDetail.getKey();
+            TriggerKey triggerKey = new TriggerKey(jobKey.getName(), jobKey.getGroup());
+            TriggerBuilder<Trigger> builder = TriggerBuilder.newTrigger();
+            CronTrigger trigger = builder.withIdentity(triggerKey)
+                    .withSchedule(CronScheduleBuilder.cronSchedule("0 0 0 * * ?"))
+                    .build();
+            scheduler.scheduleJob(jobDetail, trigger);
+        } catch (Exception e) {
+            LOG.error("", e);
+        }
+    }
+
+
+
+    private void innerStopJob(JobParam jobParam) throws SchedulerException {
+        JobKey jobKey = JobKey.jobKey(jobParam.getJobName(), jobParam.getJobGroup());
+        scheduler.deleteJob(jobKey);
+        if(jobParam.isBalance())
+            balanceJob.remove(jobKey);
+    }
+
+    private JobDetail getJobDetailByJobParam(JobParam jobParam) {
+        JobDetail jobDetail = JobBuilder.newJob(jobParam.getJobClass()).withIdentity(jobParam.getJobName(), jobParam.getJobGroup()).build();
+        jobDetail.getJobDataMap().put("jobParam",jobParam);
+        return jobDetail;
+    }
+
+    @Override
+    public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
+        this.applicationContext=applicationContext;
+    }
 
 
     private class JobSynListener {
@@ -369,48 +502,36 @@ public class ZkService extends Thread{
         }
     }
 
-    public interface EventHandler {
-        void handleEvent(JobParam jobParam);
-    }
     public interface RebalanceHandler{
         void triggle();
     }
 
-    private class DefaultHandler implements EventHandler {
-
+    class DefaultRebalance implements ZkService.RebalanceHandler {
         @Override
-        public void handleEvent(JobParam jobParam) {
-            System.out.println("use defalut handler " + jobParam);
-        }
+        public void triggle() {
+            ShardingParams old=shardingParams.get();
+            shardingParams= Suppliers.memoize(()->getShardingParams());
+            if(old.equals(shardingParams.get()))
+                return;
+            balanceJob.keySet().forEach(jobKey -> {
+                try {
+                    scheduler.deleteJob(jobKey);
+                } catch (SchedulerException e) {
+                    LOG.error("",e);
+                }
+            });
+            balanceJob.values().forEach(jobParam -> {
+                try {
+                    innerAddJob(jobParam);
+                } catch (Exception e) {
+                    LOG.error("",e);
+                }
+            });
+
+        };
     }
 
-    public String getZkAddress() {
-        return zkAddress;
-    }
 
-    public void setZkAddress(String zkAddress) {
-        this.zkAddress = zkAddress;
-    }
-
-    public String getProjectGroup() {
-        return projectGroup;
-    }
-
-    public void setProjectGroup(String projectGroup) {
-        this.projectGroup = projectGroup;
-    }
-
-    public EventHandler getEventHandler() {
-        return eventHandler;
-    }
-
-    public void setEventHandler(EventHandler eventHandler) {
-        this.eventHandler = eventHandler;
-    }
-
-    public  void addRebalanceListener(RebalanceHandler rebalanceHandler){
-        rebalanceHandlersListeners.add(rebalanceHandler);
-    }
     enum  ZkServiceEvent{
         REBALANCE,SYNJOB
     }

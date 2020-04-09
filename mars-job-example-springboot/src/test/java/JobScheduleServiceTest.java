@@ -29,7 +29,7 @@ public class JobScheduleServiceTest {
 
 
     @Test
-    public void testAddJob() throws SchedulerException, InterruptedException {
+    public void testAddJob() throws Exception {
         JobParam jobParam = new JobParam(SimpleJob.class, "* * * * * ?", "mars1", "mars1");
         jobScheduleService.addJob(jobParam, true);
         Thread.sleep(10000);
@@ -45,7 +45,7 @@ public class JobScheduleServiceTest {
                     JobParam jobParam = new JobParam(SimpleJob.class, "* * * * * ?", k + "", k + "");
                     try {
                         jobScheduleService.addJob(jobParam, true);
-                    } catch (SchedulerException e) {
+                    } catch (Exception e) {
                         e.printStackTrace();
                     }
                 }
@@ -67,7 +67,7 @@ public class JobScheduleServiceTest {
                     JobParam jobParam = new JobParam(SimpleJob.class, "* * * * * ?", k + "", k + "");
                     try {
                         jobScheduleService.deleteJob(jobParam, true);
-                    } catch (SchedulerException e) {
+                    } catch (Exception e) {
                         e.printStackTrace();
                     }
                 }
@@ -79,31 +79,11 @@ public class JobScheduleServiceTest {
     }
 
     private void say() throws SchedulerException {
-        Set<String> allScheduledJobs = new HashSet<String>();
-        Scheduler scheduler = jobScheduleService.getSchedulerFactoryBean().getScheduler();
-        for (String groupName : scheduler.getJobGroupNames()) {
 
-            for (JobKey jobKey : scheduler.getJobKeys(GroupMatcher.jobGroupEquals(groupName))) {
-
-                String jobName = jobKey.getName();
-                String jobGroup = jobKey.getGroup();
-
-                //get job's trigger
-                List<Trigger> triggers = (List<Trigger>) scheduler.getTriggersOfJob(jobKey);
-                Date nextFireTime = triggers.get(0).getNextFireTime();
-
-//                System.out.println("[jobName] : " + jobName + " [groupName] : "
-//                        + jobGroup + " - " + nextFireTime);
-                allScheduledJobs.add("[jobName] : " + jobName + " [groupName] : "
-                        + jobGroup + " - " + nextFireTime);
-            }
-        }
-        System.out.println(allScheduledJobs.size());
-        System.out.println(allScheduledJobs);
     }
 
     @Test
-    public void testDeleteJob() throws SchedulerException, InterruptedException {
+    public void testDeleteJob() throws Exception {
         JobParam jobParam = new JobParam(SimpleJob.class, "* * * * * ?", "mars1", "mars1");
         jobScheduleService.deleteJob(jobParam, true);
         Thread.sleep(10000);

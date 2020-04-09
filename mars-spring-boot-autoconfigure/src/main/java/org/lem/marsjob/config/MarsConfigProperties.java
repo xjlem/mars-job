@@ -8,6 +8,7 @@ public class MarsConfigProperties {
     private String projectGroup;
     private Integer jobEventExpireDay=7;
     private Integer jobExecuteLogExpireDay=7;
+    private String nameserver;
 
     public MarsConfigProperties() {
     }
@@ -42,5 +43,13 @@ public class MarsConfigProperties {
 
     public void setJobExecuteLogExpireDay(Integer jobExecuteLogExpireDay) {
         this.jobExecuteLogExpireDay = jobExecuteLogExpireDay;
+    }
+
+    public String getNameserver() {
+        return nameserver;
+    }
+
+    public void setNameserver(String nameserver) {
+        this.nameserver = nameserver;
     }
 }
