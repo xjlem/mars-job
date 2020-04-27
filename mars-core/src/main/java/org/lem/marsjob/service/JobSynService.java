@@ -1,31 +1,12 @@
 package org.lem.marsjob.service;
 
-import com.google.common.base.Preconditions;
-import com.google.common.base.Strings;
-import org.I0Itec.zkclient.IZkDataListener;
-import org.I0Itec.zkclient.IZkStateListener;
-import org.I0Itec.zkclient.ZkClient;
 import org.apache.rocketmq.client.exception.MQBrokerException;
 import org.apache.rocketmq.client.exception.MQClientException;
 import org.apache.rocketmq.remoting.exception.RemotingException;
-import org.apache.zookeeper.Watcher;
-import org.lem.marsjob.EventHandler;
-import org.lem.marsjob.enums.Operation;
 import org.lem.marsjob.pojo.ExecuteJobParam;
 import org.lem.marsjob.pojo.JobParam;
 import org.lem.marsjob.pojo.ShardingParams;
-import org.lem.marsjob.serialize.ZkKryoSerialize;
-import org.lem.marsjob.util.PathUtil;
-import org.lem.marsjob.util.Utils;
 import org.quartz.SchedulerException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.stream.Collectors;
 
 
 public interface JobSynService {
@@ -54,6 +35,8 @@ public interface JobSynService {
      * @throws SchedulerException
      */
     void handleJobParam(JobParam jobParam) throws SchedulerException;
+
+    void jobCompleteCallBack(ExecuteJobParam executeJobParam,Exception exception);
 
     default void close(){};
 

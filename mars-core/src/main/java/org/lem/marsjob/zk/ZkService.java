@@ -9,15 +9,17 @@ import com.google.common.hash.Hashing;
 import org.I0Itec.zkclient.IZkDataListener;
 import org.I0Itec.zkclient.IZkStateListener;
 import org.I0Itec.zkclient.ZkClient;
+import org.apache.rocketmq.client.consumer.listener.ConsumeConcurrentlyStatus;
 import org.apache.zookeeper.Watcher;
-import org.lem.marsjob.EventHandler;
 import org.lem.marsjob.enums.Operation;
 import org.lem.marsjob.job.DelegateSimpleJob;
 import org.lem.marsjob.pojo.ExecuteJobParam;
+import org.lem.marsjob.pojo.JobHandler;
 import org.lem.marsjob.pojo.JobParam;
 import org.lem.marsjob.pojo.ShardingParams;
 import org.lem.marsjob.serialize.ZkKryoSerialize;
 import org.lem.marsjob.service.JobSynService;
+import org.lem.marsjob.util.KryoUtil;
 import org.lem.marsjob.util.PathUtil;
 import org.lem.marsjob.util.Utils;
 import org.quartz.*;
@@ -29,10 +31,11 @@ import org.springframework.context.ApplicationContextAware;
 import org.springframework.scheduling.quartz.SchedulerFactoryBean;
 
 import java.nio.charset.Charset;
+import java.nio.file.Path;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
-import java.util.*;
 import java.util.Calendar;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
@@ -52,19 +55,25 @@ public class ZkService extends Thread implements JobSynService , ApplicationCont
 
     private final ZkService.RebalanceHandler DEFAULT_REBALANCE= new DefaultRebalance();
 
-
-    private String zkJobPath;
+    //任务执行节点
+    private String zkJobHistoryPath;
+    //唤醒任务同步状态节点
     private String zkJobSynNodePath;
+    //运行的机器节点
     private String zkAppNode;
+    //同步节点
     private String zkJobEventPath;
+    //任务监控
+    private String zkJobMonitorPath;
+    //正在运行的任务
+    private String zkRunningJobPath;
+
 
     private String nodeName;
     private String registPath;
 
-
     private volatile String synNodeVersion;
     private volatile String currentEventVersion;
-
 
     private ZkClient zkClient;
 
@@ -87,10 +96,11 @@ public class ZkService extends Thread implements JobSynService , ApplicationCont
 
     private ScheduledExecutorService scheduledExecutorService= Executors.newSingleThreadScheduledExecutor();
 
+    private ExecutorService executorService= new ThreadPoolExecutor(10,10,0,TimeUnit.SECONDS,new ArrayBlockingQueue<>(100));
+
     private Supplier<ShardingParams> shardingParams;
 
     private Map<JobKey,JobParam> balanceJob=new ConcurrentHashMap<>();
-
 
     private SchedulerFactoryBean schedulerFactoryBean;
 
@@ -168,8 +178,12 @@ public class ZkService extends Thread implements JobSynService , ApplicationCont
             zkEventQueue.add(ZkServiceEvent.REBALANCE);
         },20,20, TimeUnit.SECONDS);
         scheduledExecutorService.scheduleAtFixedRate(()->{
-            zkEventQueue.add(ZkServiceEvent.SYNJOB);
+            zkEventQueue.add(ZkServiceEvent.SYN_JOB);
         },15,20, TimeUnit.SECONDS);
+        scheduledExecutorService.scheduleAtFixedRate(()->{
+            zkEventQueue.add(ZkServiceEvent.CHECK_JOB);
+        },1,1, TimeUnit.MINUTES);
+
         this.start();
         rebalanceHandlersListeners.add(DEFAULT_REBALANCE);
         scheduleClean();
@@ -182,7 +196,7 @@ public class ZkService extends Thread implements JobSynService , ApplicationCont
             public void handleDataChange(String dataPath, Object data) throws Exception {
                 String zkJobVersion = zkClient.readData(dataPath);
                 synNodeVersion = zkJobVersion;
-                zkEventQueue.add(ZkServiceEvent.SYNJOB);
+                zkEventQueue.add(ZkServiceEvent.SYN_JOB);
             }
             @Override
             public void handleDataDeleted(String dataPath) throws Exception {
@@ -215,9 +229,28 @@ public class ZkService extends Thread implements JobSynService , ApplicationCont
     @Override
     public boolean scheduleJob(ExecuteJobParam executeJobParam) {
         Preconditions.checkNotNull(executeJobParam);
-        String path = PathUtil.getPath(zkJobPath, getTodayDate(), executeJobParam.getJobIdentity(), MS_SDF.get().format(executeJobParam.getFireTime()));
-        return createPersistent(path);
+        String jobRunningPath = PathUtil.getPath(zkRunningJobPath, executeJobParam.getJobIdentity()+"_"+ MS_SDF.get().format(executeJobParam.getFireTime()));
+        boolean scheduled= createPersistent(jobRunningPath,executeJobParam);
+        if(scheduled){
+            String monitorPath= PathUtil.getPath(zkJobMonitorPath,  executeJobParam.getJobIdentity()+"_"+ MS_SDF.get().format(executeJobParam.getFireTime()));
+            scheduled=createEphemeral(monitorPath);
+            if(scheduled){
+                String jobHistoryPath = PathUtil.getPath(zkJobHistoryPath, getTodayDate(), executeJobParam.getJobIdentity(), MS_SDF.get().format(executeJobParam.getFireTime()));
+                createPersistent(jobHistoryPath);
+            }
+
+        }
+        return scheduled;
     }
+
+    @Override
+    public void jobCompleteCallBack(ExecuteJobParam executeJobParam, Exception exception) {
+        String jobRunningPath = PathUtil.getPath(zkRunningJobPath, executeJobParam.getJobIdentity()+"_"+ MS_SDF.get().format(executeJobParam.getFireTime()));
+        zkClient.delete(jobRunningPath);
+        String monitorPath= PathUtil.getPath(zkJobMonitorPath,  executeJobParam.getJobIdentity()+"_"+ MS_SDF.get().format(executeJobParam.getFireTime()));
+        zkClient.delete(monitorPath);
+    }
+
 
     @Override
     public void handleJobParam(JobParam jobParam) {
@@ -239,6 +272,7 @@ public class ZkService extends Thread implements JobSynService , ApplicationCont
             LOG.error("handle event error:", jobParam, e);
         }
     }
+
 
 
     @Override
@@ -268,12 +302,14 @@ public class ZkService extends Thread implements JobSynService , ApplicationCont
             try {
                 ZkServiceEvent event=zkEventQueue.take();
                 switch (event){
-                    case SYNJOB:
+                    case SYN_JOB:
                         jobSynlistener.onTriggle();
                         break;
                     case REBALANCE:
                         rebalanceHandlersListeners.forEach(e->e.triggle());
                         break;
+                    case CHECK_JOB:
+                        checkJob();
                     default:break;
                 }
             } catch (InterruptedException e) {
@@ -282,14 +318,55 @@ public class ZkService extends Thread implements JobSynService , ApplicationCont
         }
     }
 
+    private void checkJob() {
+        List<String> runningJobs=zkClient.getChildren(zkRunningJobPath);
+        List<String> lostJobs=new LinkedList<>();
+        if(!runningJobs.isEmpty()){
+            for(String job :runningJobs){
+                String monitorPath= PathUtil.getPath(zkJobMonitorPath,job);
+                if(!zkClient.exists(monitorPath)){
+                    lostJobs.add(job);
+                }
+            }
+        }
+
+        for(String lostJob:lostJobs){
+            executorService.execute(()->{
+                String runningPath= PathUtil.getPath(zkRunningJobPath,lostJob);
+                if(zkClient.exists(runningPath)){
+                    ExecuteJobParam executeJobParam=zkClient.readData(runningPath);
+                    String monitorPath= PathUtil.getPath(zkJobMonitorPath,  lostJob);
+                    if(createEphemeral(monitorPath)){
+                        executeJobParam.setContext(applicationContext);
+                        try {
+                            JobHandler jobHandler = executeJobParam.getJobHandler().newInstance();
+                            jobHandler.execute(executeJobParam);
+                        } catch (Exception e) {
+                            LOG.error("execute job fail,will retry");
+                        }
+                        zkClient.delete(monitorPath);
+                        zkClient.delete(runningPath);
+                    }
+
+                }
+            });
+        }
+    }
+
     private void initPath() {
-        zkJobPath = PathUtil.getPath(PathUtil.MARS_JOB, projectGroup, "job");
+        zkJobHistoryPath = PathUtil.getPath(PathUtil.MARS_JOB, projectGroup, "job");
         zkJobSynNodePath = PathUtil.getPath(PathUtil.MARS_JOB, projectGroup, "jobsyn");
         zkAppNode = PathUtil.getPath(PathUtil.MARS_JOB, projectGroup, "app");
         zkJobEventPath = PathUtil.getPath(PathUtil.MARS_JOB, projectGroup, "event");
+        zkJobMonitorPath = PathUtil.getPath(PathUtil.MARS_JOB, projectGroup, "jobMonitor");
+        zkRunningJobPath = PathUtil.getPath(PathUtil.MARS_JOB, projectGroup, "jobRunning");
+        createPathIfAbsent(zkJobHistoryPath);
         createPathIfAbsent(zkJobSynNodePath);
-        createPathIfAbsent(zkJobEventPath);
         createPathIfAbsent(zkAppNode);
+        createPathIfAbsent(zkJobEventPath);
+        createPathIfAbsent(zkJobMonitorPath);
+        createPathIfAbsent(zkRunningJobPath);
+
     }
 
     private void createPathIfAbsent(String zkJobSynNodePath) {
@@ -349,8 +426,8 @@ public class ZkService extends Thread implements JobSynService , ApplicationCont
     }
 
     private void deleteExpireJobExecuteLog() {
-        if (!zkClient.exists(zkJobPath)) return;
-        List<String> children = zkClient.getChildren(zkJobPath);
+        if (!zkClient.exists(zkJobHistoryPath)) return;
+        List<String> children = zkClient.getChildren(zkJobHistoryPath);
         Calendar deadlineTime = Calendar.getInstance();
         deadlineTime.add(Calendar.DAY_OF_YEAR, -jobExecuteLogExpireDay);
         children = children.stream().filter(e -> {
@@ -359,7 +436,7 @@ public class ZkService extends Thread implements JobSynService , ApplicationCont
             } catch (ParseException e1) {
                 return false;
             }
-        }).map(e -> PathUtil.getPath(zkJobPath, e)).collect(Collectors.toList());
+        }).map(e -> PathUtil.getPath(zkJobHistoryPath, e)).collect(Collectors.toList());
         children.forEach(e -> zkClient.deleteRecursive(e));
     }
 
@@ -374,8 +451,26 @@ public class ZkService extends Thread implements JobSynService , ApplicationCont
         }
     }
 
-
-
+    private boolean createEphemeral(String path) {
+        if (zkClient.exists(path)) return false;
+        try {
+            createPathIfAbsent(parentPath(path));
+            zkClient.createEphemeral(path);
+        } catch (Exception e) {
+            return false;
+        }
+        return true;
+    }
+    private boolean createPersistent(String path,Object data) {
+        if (zkClient.exists(path)) return false;
+        try {
+            createPathIfAbsent(parentPath(path));
+            zkClient.createPersistent(path, data);
+        } catch (Exception e) {
+            return false;
+        }
+        return true;
+    }
 
     private boolean createPersistent(String path) {
         if (zkClient.exists(path)) return false;
@@ -533,7 +628,7 @@ public class ZkService extends Thread implements JobSynService , ApplicationCont
 
 
     enum  ZkServiceEvent{
-        REBALANCE,SYNJOB
+        REBALANCE,SYN_JOB, CHECK_JOB ;
     }
 }
 

@@ -54,8 +54,9 @@ public class JobService implements InitializingBean {
     }
 
 
-    @SimpleJobSchedule(cron = "* * * * * ?")
+    @SimpleJobSchedule(cron = "0 * * * * ?")
     private void say() throws SchedulerException {
+        System.out.println("say1024");
     }
 
 

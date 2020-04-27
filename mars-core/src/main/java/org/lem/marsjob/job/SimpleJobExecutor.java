@@ -35,10 +35,15 @@ public abstract class SimpleJobExecutor implements Job, JobHandler {
             Object context=  jobExecutionContext.getScheduler().getContext().get(JobSynService.CONTEXT_KEY);
             executeJobParam.setContext(context);
         } catch (SchedulerException e) {
-            e.printStackTrace();
+            LOG.error("start work fail",e);
         }
-
-         execute(executeJobParam);
+        Exception exception=null;
+        try{
+            execute(executeJobParam);
+        }catch (Exception e){
+            exception=e;
+        }
+        jobSynService.jobCompleteCallBack(executeJobParam,exception);
     }
 
 }

@@ -52,7 +52,8 @@ public class Master {
         RetryPolicy retryPolicy = new ExponentialBackoffRetry(1000, 3);
         CuratorFramework client = CuratorFrameworkFactory.newClient("localhost:2181", retryPolicy);
         client.start();
-        LeaderSelectorListener leaderSelectorListener=new LeaderSelectorListener() {
+
+       /* LeaderSelectorListener leaderSelectorListener=new LeaderSelectorListener() {
             @Override
             public void takeLeadership(CuratorFramework curatorFramework) throws Exception {
                 System.out.println("master");
@@ -76,7 +77,7 @@ public class Master {
 
            }
        });
-        latch.start();
+        latch.start();*/
         System.in.read();
     }
 

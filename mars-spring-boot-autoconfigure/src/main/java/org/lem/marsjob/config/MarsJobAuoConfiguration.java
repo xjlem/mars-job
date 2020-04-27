@@ -48,20 +48,24 @@ public class MarsJobAuoConfiguration {
     }
 
 
+    @ConditionalOnProperty(value = "mars.nameserver")
+    @Bean(initMethod = "init", destroyMethod = "close")
+    public MqService mqService(SchedulerFactoryBean schedulerFactoryBean) {
+        MqService mqService = new MqService(properties.getZkAddress(),properties.getNameserver(), properties.getProjectGroup(), schedulerFactoryBean);
+        if(properties.getJobMaxExecuteTime()!=null)
+            mqService.setJobMaxExecuteTime(properties.getJobMaxExecuteTime());
+        return mqService;
+    }
 
-    @ConditionalOnMissingClass(value = "org.lem.marsjob.mq.MqService")
+
+    @ConditionalOnMissingBean(MqService.class)
     @Bean(initMethod = "init", destroyMethod = "close")
     public ZkService zkService(SchedulerFactoryBean schedulerFactoryBean) {
         ZkService zkService = new ZkService(properties.getZkAddress(), properties.getProjectGroup(), properties.getJobEventExpireDay(), properties.getJobEventExpireDay(),schedulerFactoryBean);
         return zkService;
     }
 
-    @ConditionalOnProperty(value = "mars.nameserver")
-    @Bean(initMethod = "init", destroyMethod = "close")
-    public MqService mqService(SchedulerFactoryBean schedulerFactoryBean) {
-        MqService mqService = new MqService(properties.getZkAddress(),properties.getNameserver(), properties.getProjectGroup(), schedulerFactoryBean);
-        return mqService;
-    }
+
 
 
     @Bean

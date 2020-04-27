@@ -1,9 +1,15 @@
 package org.lem.mars;
 
+import jdk.nashorn.internal.runtime.linker.Bootstrap;
 import org.lem.marsjob.annotation.SimpleJobSchedule;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.PostConstruct;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Function;
 
 @Component
 public class Job {
@@ -22,5 +28,6 @@ public class Job {
         System.out.println("----------------say3-------------");
     }
 
-
+    public static void main(String[] args) {
+    }
 }

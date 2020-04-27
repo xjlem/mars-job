@@ -5,7 +5,6 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.util.ReflectionUtils;
 
 import java.lang.reflect.Method;
-import java.util.Map;
 
 public class DelegateSimpleJob extends SimpleJobExecutor {
 

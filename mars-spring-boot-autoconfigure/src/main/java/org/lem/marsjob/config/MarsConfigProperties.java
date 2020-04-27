@@ -9,6 +9,7 @@ public class MarsConfigProperties {
     private Integer jobEventExpireDay=7;
     private Integer jobExecuteLogExpireDay=7;
     private String nameserver;
+    private Long jobMaxExecuteTime;
 
     public MarsConfigProperties() {
     }
@@ -51,5 +52,13 @@ public class MarsConfigProperties {
 
     public void setNameserver(String nameserver) {
         this.nameserver = nameserver;
+    }
+
+    public Long getJobMaxExecuteTime() {
+        return jobMaxExecuteTime;
+    }
+
+    public void setJobMaxExecuteTime(Long jobMaxExecuteTime) {
+        this.jobMaxExecuteTime = jobMaxExecuteTime;
     }
 }

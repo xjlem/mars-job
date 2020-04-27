@@ -8,7 +8,7 @@ public class ExecuteJobParam {
     private Map<String, String> jobDataMap;
     private String  jobIdentity;
     private Date fireTime;
-    private Object context=null;
+    private transient Object context=null;
 
     public ExecuteJobParam(JobParam jobParam,Date fireTime) {
         this.fireTime = fireTime;
@@ -16,6 +16,7 @@ public class ExecuteJobParam {
         jobDataMap=jobParam.getJobData();
         jobIdentity=jobParam.getJobGroup()+"_"+jobParam.getJobName();
     }
+
 
     public Class<? extends JobHandler> getJobHandler() {
         return jobHandler;
@@ -56,4 +57,5 @@ public class ExecuteJobParam {
     public void setContext(Object context) {
         this.context = context;
     }
+
 }
